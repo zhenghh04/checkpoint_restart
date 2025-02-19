@@ -44,3 +44,8 @@ In this github repo, we provide simple program to simulate all kinds of job runn
 - [hang/](./hang): job hang, kill and restart
 - [success/](./success): job run seccessfully
 - [resub/](./resub): job fails after 100 seconds, and restart
+
+## Checkpoint interval optimization utility
+- [optimal_checkpointing.py](./optimal_checkpointing.py)
+  Determine the optimal time interval of computation between checkpoints
+  for a job of determined node size and checkpointed memory per node
