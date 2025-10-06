@@ -16,8 +16,5 @@ if [ -z "${LOCAL_RANK}" ]; then
     LOCAL_RANK=0
 fi
 
-IFS='.' read -ra ADDR <<< "`cat $PBS_NODEFILE | head -1`"
-export MASTER_ADDR=$ADDR".hsn.cm.aurora.alcf.anl.gov"
-export MASTER_PORT=1234
 echo "I am $RANK of $WORLD_SIZE: $LOCAL_RANK on `hostname`"
 $@

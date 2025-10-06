@@ -15,10 +15,7 @@ cd ${PBS_O_WORKDIR}
 
 cat $PBS_NODEFILE | uniq > nodefile_all
 
-export PATH=/flare/Aurora_deployment/AuroraGPT/soft/checkpoint_restart/:$PATH
-
 export JOBSIZE=2
-export local_rank=/flare/Aurora_deployment/AuroraGPT/soft/checkpoint_restart/local_rank.sh
 
 rm -f check_hang.r$JOBID
 
@@ -31,18 +28,22 @@ do
     export PBS_NODEFILE=pbs_nodefile$RUN
 
     # constantly check the job and kill the job if it hangs for 300 seconds
-    check_hang.py --timeout 300 --output $PBS_JOBNAME.o$JOBID:$PBS_JOBNAME.e$JOBID:output.log --command python >> check_hang.r$JOBID &
+    check_hang.py --timeout 300 --outputs $PBS_JOBNAME.o$JOBID:$PBS_JOBNAME.e$JOBID:output.log --kill-command "pkill -u $USER python ./test_pyjob.py" >> check_hang.r$JOBID &
+
+    # constantly check the job and kill the job if it generates nan/inf
+    check_nan.py --outputs $PBS_JOBNAME.o$JOBID:$PBS_JOBNAME.e$JOBID:output.log --kill-command "pkill -u $USER python ./test_pyjob.py" >> check_nan.r$JOBID &
 
     # run the actual job, in this case, the job will run for 200 seconds and fail (finished about 9 iterations each time)
-    mpiexec -np $((JOBSIZE*12)) --ppn 12 ${local_rank} python ./test_pyjob.py --compute 10 --niters 100 --output output.log
+    mpiexec -np $((JOBSIZE*12)) --ppn 12 launcher.sh python ./test_pyjob.py --compute 10 --niters 100 --output output.log
 
     EXIT_CODE=$?
     # Check the job status
     if [ $EXIT_CODE -ne 0 ]; then
-	echo "Job exited with $EXIT_CODE error code, will rerun"	
+	    echo "Job exited with $EXIT_CODE error code; will rerun"	
+        # We might want to do more things here. 
     else
-	echo "Job run successfully"
-	break
+	    echo "Job run successfully"
+	    break
     fi
     echo "Rerun the job at `date`; time of trials: $RUN"
     # clear up the nodes for rerun the job

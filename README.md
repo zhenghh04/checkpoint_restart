@@ -2,21 +2,41 @@
 
 For questions, please contact: Huihuo Zheng <huihuo.zheng@anl.gov>
 
-We have seen that exascale computing systems suffer a lot of unstability which leads to termination of jobs before finishing. Therefore, checkpoint / restart become important to run large scale simulations on ``unstable" system. 
+Exascale computing systems often experience instabilities that can cause job terminations before completion.
 
-In this github repo, we provide simple program to simulate all kinds of job running issues such as (1) hang; (2) fail in the middle of the run; (3) success. We provide example submission script that can deal with various kind of situations. 
+To ensure large-scale simulations can continue efficiently, checkpoint/restart mechanisms are essential.
+
+This repository provides:
+	•	Simple programs to simulate common job execution issues:
+(1) hanging, (2) mid-run failures, and (3) successful completion.
+	•	Example submission scripts that automatically detect failures and restart jobs using healthy nodes.
+
+The **key idea** is to over-allocate nodes, allowing jobs to be restarted on a healthy subset of nodes if a failure occurs.
+
+
+## Install the package
+
+```bash
+git clone https://github.com/argonne-lcf/checkpoint_restart
+cd checkpoint_restart
+pip install -e .
+```
 
 ## Simulation of job execution: hang, fail, success
-- test_pyjob.py 
-  A simple simulation program, which can control
-  ```bash
-  --hang N: to hang for N seconds
-  --fail N: to fail the job after N seconds
-  --compute T: compute time per iteration
-  --niters NITERS: total number of iterations
-  --checkpoint CHECKPOINT: path for checkpoint
-  --checkpoint_time T: time for writing one checkpoint
-  ```
+The test_pyjob.py script allows you to simulate various job behaviors:
+```bash
+--hang N              # Hang for N seconds
+--fail N              # Fail after N seconds
+--compute T           # Compute time per iteration
+--niters NITERS       # Total number of iterations
+--checkpoint PATH     # Checkpoint file path
+--checkpoint_time T   # Time to write a single checkpoint
+```
+
+```
+python test_pyjob.py --fail 120 --checkpoint ./chkpt --niters 1000
+```
+
 ## Useful scripts to compose the submission scripts that are able to handle various job execution statuses. 
 
 - [get_healthy_nodes.sh](./get_healthy_nodes.sh) ```NODEFILE NUM_NODES_TO_SELECT NEW_NODEFILE```
