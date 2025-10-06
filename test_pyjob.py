@@ -56,7 +56,7 @@ for i in range(checkpoint, args.niters):
             fc.write(f"{i}\n")
     if rank==0:
         print(f"{i} iteration ...")
-        if i >= args.nan_after and args.nan_after is not None:
+        if args.nan_after is not None and i >= args.nan_after:
             fout.write(f"{i} iteration ..., result: NaN\n")
             fout.flush()
         else:

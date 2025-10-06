@@ -15,6 +15,7 @@ import sys
 import time
 from pathlib import Path
 from time import localtime, strftime
+from typing import List, Optional
 
 __version__ = "0.2.0"
 
@@ -23,9 +24,9 @@ def get_date(etime: float) -> str:
     return strftime("%Y-%m-%d %H:%M:%S", localtime(etime))
 
 
-def most_recent_mtime(paths: list[Path]) -> float | None:
+def most_recent_mtime(paths: List[Path]) -> Optional[float]:
     """Return the most recent mtime among existing paths; None if none exist."""
-    mtimes: list[float] = []
+    mtimes: List[float] = []
     for p in paths:
         try:
             if p.exists():
