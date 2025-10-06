@@ -27,7 +27,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 
 # --- Regex helpers -----------------------------------------------------------
 NAN_RE = re.compile(r"(?<![A-Za-z0-9_])nan(?![A-Za-z0-9_])", re.IGNORECASE)
@@ -180,7 +180,7 @@ def try_kill(args: argparse.Namespace) -> None:
 
     # 3) Arbitrary kill command
     if args.kill_command:
-        print(f"Running kill command: {args.kill_cmd}", flush=True)
+        print(f"Running kill command: {args.kill_command}", flush=True)
         try:
             subprocess.run(args.kill_command, shell=True, check=False)
             did_something = True
