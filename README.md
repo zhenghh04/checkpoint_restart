@@ -13,6 +13,7 @@ This repository provides:
 
 The **key idea** is to over-allocate nodes, allowing jobs to be restarted on a healthy subset of nodes if a failure occurs.
 
+![alt text](.docs/figures/schematic.png)
 
 ## Install the package
 
@@ -90,7 +91,7 @@ python test_pyjob.py --fail 120 --checkpoint ./chkpt --niters 1000
 - [fail/](./fail): job failed after 100 seconds, restart
 - [hang/](./hang): job hang, kill and restart
 - [success/](./success): job run seccessfully
-- [resub/](./resub): job fails after 100 seconds, and restart
+- [nan/](./nan): NaN after a few iterations, restart
 
 ## Checkpoint interval optimization utility
 - [optimal_checkpointing.py](./optimal_checkpointing.py)
