@@ -32,7 +32,7 @@ do
     check_hang.py --timeout 300 --outputs $PBS_JOBNAME.o$JOBID:$PBS_JOBNAME.e$JOBID:output.log --kill-command "pkill -u $USER python ./test_pyjob.py" >> check_hang.r$JOBID &
 
     # run the actual job, in this case, the job will run for 200 seconds and fail (finished about 9 iterations each time)
-    mpiexec -np $((JOBSIZE*12)) --ppn 12 launcher.sh python ./test_pyjob.py --compute 10 --niters 100 --output output.log --fail 100
+    mpiexec -np $((JOBSIZE*12)) --ppn 12 launcher.sh python ./test_pyjob.py --compute 10 --niters 100 --output output.log 
 
     EXIT_CODE=$?
     # Check the job status
