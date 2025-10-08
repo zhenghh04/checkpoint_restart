@@ -88,10 +88,10 @@ python test_pyjob.py --fail 120 --checkpoint ./chkpt --niters 1000
   submission script doing continual trials of mpiexec until success or timeout
 
 ## Various simulation examples
-- [fail/](./fail): job failed after 100 seconds, restart
-- [hang/](./hang): job hang, kill and restart
-- [success/](./success): job run seccessfully
-- [nan/](./nan): NaN after a few iterations, restart
+- [fail/](./examples/fail): job failed after 100 seconds, restart
+- [hang/](./examples/hang): job hang, kill and restart
+- [success/](./examples/success): job run seccessfully
+- [nan/](./examples/nan): NaN after a few iterations, restart
 
 ## Checkpoint interval optimization utility
 - [optimal_checkpointing.py](./optimal_checkpointing.py)
