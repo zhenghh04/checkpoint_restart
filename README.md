@@ -87,6 +87,10 @@ python test_pyjob.py --fail 120 --checkpoint ./chkpt --niters 1000
 - [qsub_multi_mpiexec.sc](./qsub_multi_mpiexec.sc)
   submission script doing continual trials of mpiexec until success or timeout
 
+## System Monitoring
+- [system_monitoring/README.md](./system_monitoring/README.md)
+  Monitoring scripts and dashboard service for JSON-based node health visualization.
+
 ## YAML-driven microkernel health checks
 - Config file: [system_monitoring/health_checks.yaml](./system_monitoring/health_checks.yaml)
 - Runner: [system_monitoring/run_health_checks.py](./system_monitoring/run_health_checks.py)

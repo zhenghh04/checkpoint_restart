@@ -9,6 +9,7 @@ setup(
         "job_monitoring/check_nan.py",
         "utils/get_healthy_nodes.sh",
         "system_monitoring/run_health_checks.py",
+        "system_monitoring/dashboard.py",
         "utils/launcher.sh",
         "utils/flush.sh",         
     ],
