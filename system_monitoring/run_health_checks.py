@@ -2,11 +2,15 @@
 """Run configurable microkernel health checks from a YAML file."""
 
 import argparse
+import json
 import os
+import re
 import shlex
+import socket
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -189,6 +193,126 @@ def run_build_step(config: Dict, template_vars: Dict[str, str], dry_run: bool) -
     return True
 
 
+def now_iso_utc() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def job_id_token(pbs_jobid: str) -> str:
+    raw = (pbs_jobid or "").strip()
+    if not raw:
+        return "unknown"
+    core = raw.split(".", 1)[0]
+    token = re.sub(r"[^A-Za-z0-9_-]", "_", core)
+    return token or "unknown"
+
+
+def resolve_dashboard_output_path(path_arg: str, pbs_jobid: str, repo_root: Path) -> Path:
+    token = job_id_token(pbs_jobid)
+    if path_arg.strip():
+        resolved = path_arg.strip().replace("{job_id}", token)
+        return Path(resolved).resolve()
+    return (repo_root / "system_monitoring" / "data" / f"health_{token}.json").resolve()
+
+
+def load_nodes(nodefile: str) -> List[str]:
+    if nodefile:
+        path = Path(nodefile)
+        if path.exists():
+            seen = set()
+            nodes: List[str] = []
+            for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                node = line.strip()
+                if node and node not in seen:
+                    nodes.append(node)
+                    seen.add(node)
+            if nodes:
+                return nodes
+    return [socket.gethostname()]
+
+
+def write_dashboard_json(
+    output_path: Path,
+    pbs_jobid: str,
+    results: List[Tuple[str, bool, float, int]],
+    dry_run: bool,
+    nodes: List[str],
+    append: bool,
+) -> None:
+    passed_check_names = [check_id for check_id, ok, _, _ in results if ok]
+    failed_check_names = [check_id for check_id, ok, _, _ in results if not ok]
+    n_fail = len(failed_check_names)
+    status = "healthy"
+    if n_fail > 0:
+        status = "unhealthy"
+    elif dry_run:
+        status = "warning"
+
+    checks_payload = [
+        {
+            "id": check_id,
+            "status": "healthy" if ok else "unhealthy",
+            "return_code": rc,
+            "elapsed_seconds": round(elapsed, 4),
+        }
+        for check_id, ok, elapsed, rc in results
+    ]
+
+    payload = {"nodes": []}
+
+    ts = now_iso_utc()
+    new_nodes: List[Dict] = []
+    for node in nodes:
+        new_nodes.append(
+            {
+                "node": node,
+                "PBS_JOBID": pbs_jobid or "unknown",
+                "status": status,
+                "health_condition": status,
+                "healthy": n_fail == 0,
+                "timestamp": ts,
+                "summary": {
+                    "total_checks": len(results),
+                    "passed_checks": len(results) - n_fail,
+                    "failed_checks": n_fail,
+                    "passed_check_names": passed_check_names,
+                    "failed_check_names": failed_check_names,
+                    "dry_run": dry_run,
+                },
+                "checks": checks_payload,
+            }
+        )
+
+    if append and output_path.exists():
+        try:
+            current = json.loads(output_path.read_text(encoding="utf-8"))
+            existing_nodes = current.get("nodes", []) if isinstance(current, dict) else []
+            if not isinstance(existing_nodes, list):
+                existing_nodes = []
+        except Exception:
+            existing_nodes = []
+
+        merged = {}
+        for item in existing_nodes:
+            if not isinstance(item, dict):
+                continue
+            key = (str(item.get("PBS_JOBID", "unknown")), str(item.get("node", "unknown")))
+            merged[key] = item
+        for item in new_nodes:
+            key = (str(item.get("PBS_JOBID", "unknown")), str(item.get("node", "unknown")))
+            merged[key] = item
+
+        payload["nodes"] = sorted(
+            merged.values(),
+            key=lambda x: (str(x.get("PBS_JOBID", "")), str(x.get("node", ""))),
+        )
+    else:
+        payload["nodes"] = new_nodes
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    print(f"Dashboard JSON written to: {output_path}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run microkernel health checks from YAML configuration.",
@@ -243,6 +367,27 @@ def main() -> int:
         "--fail-fast",
         action="store_true",
         help="Stop after first failed check.",
+    )
+    parser.add_argument(
+        "--dashboard-json",
+        default="",
+        help="Path for dashboard JSON output. Supports {job_id} placeholder. "
+        "If omitted, defaults to system_monitoring/data/health_{job_id}.json.",
+    )
+    parser.add_argument(
+        "--pbs-jobid",
+        default=os.environ.get("PBS_JOBID", ""),
+        help="PBS job ID to embed in dashboard JSON (defaults to $PBS_JOBID).",
+    )
+    parser.add_argument(
+        "--nodefile",
+        default=os.environ.get("PBS_NODEFILE", ""),
+        help="Nodefile for per-node dashboard output (defaults to $PBS_NODEFILE).",
+    )
+    parser.add_argument(
+        "--overwrite-dashboard-json",
+        action="store_true",
+        help="Overwrite dashboard JSON instead of appending/upserting by (PBS_JOBID, node).",
     )
     args = parser.parse_args()
 
@@ -339,6 +484,22 @@ def main() -> int:
     for check_id, ok, elapsed, rc in results:
         status = "PASS" if ok else "FAIL"
         print(f"{status:4} {check_id:32} rc={rc:3d} elapsed={elapsed:.2f}s")
+
+    if args.dashboard_json or args.pbs_jobid.strip():
+        nodes = load_nodes(args.nodefile.strip())
+        output_path = resolve_dashboard_output_path(
+            args.dashboard_json,
+            args.pbs_jobid.strip(),
+            repo_root,
+        )
+        write_dashboard_json(
+            output_path=output_path,
+            pbs_jobid=args.pbs_jobid.strip(),
+            results=results,
+            dry_run=args.dry_run,
+            nodes=nodes,
+            append=not args.overwrite_dashboard_json,
+        )
 
     if failed:
         return 1

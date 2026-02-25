@@ -6,7 +6,7 @@ For the system monitoring, I would like to have a dashboard to be able to visual
 - [x] Provide an HTTP dashboard service to visualize node health.
   - Added: `system_monitoring/dashboard.py`
   - Added: `system_monitoring/README.md`
-  - Added sample data: `system_monitoring/data/sample_nodes.json`
+  - Added sample data pattern: `system_monitoring/data/health_<job_id>.json`
 
 Current dashboard endpoints:
 - `/` web UI

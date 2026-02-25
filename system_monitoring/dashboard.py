@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import parse_qs, urlsplit
 
 
 def iso_now() -> str:
@@ -57,9 +58,17 @@ def normalize_node(record: Dict) -> str:
     return "unknown"
 
 
+def normalize_job_id(record: Dict) -> str:
+    for key in ("PBS_JOBID", "pbs_jobid", "job_id", "jobid", "job"):
+        if key in record and str(record[key]).strip():
+            return str(record[key]).strip()
+    return "unknown"
+
+
 @dataclass
 class NodeState:
     node: str
+    job_id: str
     status: str
     timestamp: Optional[str]
     source_file: str
@@ -70,14 +79,16 @@ class HealthDataStore:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self._lock = threading.Lock()
-        self._node_map: Dict[str, NodeState] = {}
+        self._rows: List[NodeState] = []
         self._source_files: List[str] = []
+        self._job_ids: List[str] = []
         self._last_refresh_utc = iso_now()
 
     def refresh(self) -> None:
         files = sorted(self.data_dir.glob("*.json"))
-        next_map: Dict[str, NodeState] = {}
+        latest_by_job_node: Dict[tuple, NodeState] = {}
         source_names: List[str] = []
+        job_ids = set()
 
         for path in files:
             source_names.append(path.name)
@@ -97,51 +108,62 @@ class HealthDataStore:
 
             for row in rows:
                 node = normalize_node(row)
+                job_id = normalize_job_id(row)
                 status = normalize_status(row)
                 ts_raw = row.get("timestamp") or row.get("time")
                 ts = str(ts_raw).strip() if ts_raw is not None else None
 
                 candidate = NodeState(
                     node=node,
+                    job_id=job_id,
                     status=status,
                     timestamp=ts,
                     source_file=path.name,
                     details=row,
                 )
+                job_ids.add(job_id)
 
-                prev = next_map.get(node)
+                key = (job_id, node)
+                prev = latest_by_job_node.get(key)
                 if prev is None:
-                    next_map[node] = candidate
+                    latest_by_job_node[key] = candidate
                     continue
 
                 prev_dt = parse_timestamp(prev.timestamp)
                 curr_dt = parse_timestamp(candidate.timestamp)
                 if prev_dt is None and curr_dt is not None:
-                    next_map[node] = candidate
+                    latest_by_job_node[key] = candidate
                 elif prev_dt is not None and curr_dt is not None and curr_dt >= prev_dt:
-                    next_map[node] = candidate
+                    latest_by_job_node[key] = candidate
 
         with self._lock:
-            self._node_map = next_map
+            self._rows = list(latest_by_job_node.values())
             self._source_files = source_names
+            self._job_ids = sorted(job_ids)
             self._last_refresh_utc = iso_now()
 
-    def snapshot(self) -> Dict:
+    def snapshot(self, selected_job_id: str = "all") -> Dict:
         with self._lock:
-            nodes = list(self._node_map.values())
+            rows = list(self._rows)
             files = list(self._source_files)
+            job_ids = list(self._job_ids)
             last_refresh = self._last_refresh_utc
 
+        if selected_job_id not in ("", "all"):
+            rows = [row for row in rows if row.job_id == selected_job_id]
+
         status_counts = {"healthy": 0, "warning": 0, "unhealthy": 0, "unknown": 0}
-        for n in nodes:
+        for n in rows:
             status_counts[n.status] = status_counts.get(n.status, 0) + 1
 
         return {
             "last_refresh_utc": last_refresh,
             "data_dir": str(self.data_dir),
             "source_files": files,
+            "job_ids": job_ids,
+            "selected_job_id": selected_job_id if selected_job_id else "all",
             "summary": {
-                "total_nodes": len(nodes),
+                "total_nodes": len(rows),
                 "healthy": status_counts.get("healthy", 0),
                 "warning": status_counts.get("warning", 0),
                 "unhealthy": status_counts.get("unhealthy", 0),
@@ -150,12 +172,13 @@ class HealthDataStore:
             "nodes": [
                 {
                     "node": n.node,
+                    "job_id": n.job_id,
                     "status": n.status,
                     "timestamp": n.timestamp,
                     "source_file": n.source_file,
                     "details": n.details,
                 }
-                for n in sorted(nodes, key=lambda x: x.node)
+                for n in sorted(rows, key=lambda x: (x.node, x.job_id))
             ],
         }
 
@@ -204,6 +227,8 @@ def build_index_html(refresh_seconds: int) -> str:
     .pill.unhealthy {{ background: var(--unhealthy); }}
     .pill.unknown {{ background: var(--unknown); }}
     .small {{ color: var(--muted); font-size: 12px; }}
+    .check-btn {{ border: 1px solid #cbd5e1; background: #f8fafc; border-radius: 8px; padding: 4px 8px; cursor: pointer; font-size: 12px; }}
+    .check-btn:hover {{ background: #e2e8f0; }}
   </style>
 </head>
 <body>
@@ -222,6 +247,9 @@ def build_index_html(refresh_seconds: int) -> str:
     </div>
 
     <div class=\"toolbar\">
+      <select id=\"jobId\">
+        <option value=\"all\">All PBS_JOBID</option>
+      </select>
       <input id=\"search\" placeholder=\"Filter nodes...\" />
       <select id=\"status\">
         <option value=\"all\">All status</option>
@@ -236,7 +264,9 @@ def build_index_html(refresh_seconds: int) -> str:
       <thead>
         <tr>
           <th>Node</th>
+          <th>PBS_JOBID</th>
           <th>Status</th>
+          <th>Checks (Pass/Fail)</th>
           <th>Timestamp</th>
           <th>Source</th>
         </tr>
@@ -248,6 +278,8 @@ def build_index_html(refresh_seconds: int) -> str:
 <script>
 const refreshMs = {max(1000, refresh_seconds * 1000)};
 let cache = [];
+let activeJobId = 'all';
+let renderedRows = [];
 
 function esc(s) {{
   return String(s ?? '').replace(/[&<>\"]/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}}[c]));
@@ -255,6 +287,37 @@ function esc(s) {{
 
 function pill(status) {{
   return `<span class=\"pill ${{esc(status)}}\">${{esc(status)}}</span>`;
+}}
+
+function checkStats(n) {{
+  const summary = n?.details?.summary || {{}};
+  const checks = Array.isArray(n?.details?.checks) ? n.details.checks : [];
+  const total = Number.isFinite(summary.total_checks) ? summary.total_checks : checks.length;
+  const failed = Number.isFinite(summary.failed_checks)
+    ? summary.failed_checks
+    : checks.filter(c => (c?.status || '').toLowerCase() !== 'healthy').length;
+  const passed = Number.isFinite(summary.passed_checks)
+    ? summary.passed_checks
+    : Math.max(0, total - failed);
+  return `${{passed}}/${{failed}}`;
+}}
+
+function passedCheckNames(n) {{
+  const summary = n?.details?.summary || {{}};
+  if (Array.isArray(summary.passed_check_names) && summary.passed_check_names.length > 0) {{
+    return summary.passed_check_names.join(', ');
+  }}
+  const checks = Array.isArray(n?.details?.checks) ? n.details.checks : [];
+  return checks.filter(c => (c?.status || '').toLowerCase() === 'healthy').map(c => c?.id || '').filter(Boolean).join(', ');
+}}
+
+function failedCheckNames(n) {{
+  const summary = n?.details?.summary || {{}};
+  if (Array.isArray(summary.failed_check_names) && summary.failed_check_names.length > 0) {{
+    return summary.failed_check_names.join(', ');
+  }}
+  const checks = Array.isArray(n?.details?.checks) ? n.details.checks : [];
+  return checks.filter(c => (c?.status || '').toLowerCase() !== 'healthy').map(c => c?.id || '').filter(Boolean).join(', ');
 }}
 
 function renderRows() {{
@@ -267,23 +330,45 @@ function renderRows() {{
     const matchesS = status === 'all' || n.status === status;
     return matchesQ && matchesS;
   }});
+  renderedRows = filtered;
 
-  rows.innerHTML = filtered.map(n => `
+  rows.innerHTML = filtered.map((n, i) => `
     <tr>
       <td>${{esc(n.node)}}</td>
+      <td><span class=\"small\">${{esc(n.job_id || 'unknown')}}</span></td>
       <td>${{pill(n.status)}}</td>
+      <td><button class=\"check-btn\" data-row-index=\"${{i}}\">${{esc(checkStats(n))}}</button></td>
       <td><span class=\"small\">${{esc(n.timestamp || '')}}</span></td>
       <td><span class=\"small\">${{esc(n.source_file || '')}}</span></td>
     </tr>
   `).join('');
 }}
 
+function updateJobIdOptions(jobIds, selected) {{
+  const sel = document.getElementById('jobId');
+  const prev = sel.value || 'all';
+  const wanted = selected || prev || 'all';
+  const values = ['all', ...(jobIds || [])];
+  sel.innerHTML = values.map(v => {{
+    const label = v === 'all' ? 'All PBS_JOBID' : v;
+    return `<option value=\"${{esc(v)}}\">${{esc(label)}}</option>`;
+  }}).join('');
+  if (values.includes(wanted)) {{
+    sel.value = wanted;
+  }} else {{
+    sel.value = 'all';
+  }}
+  activeJobId = sel.value;
+}}
+
 async function refresh() {{
   try {{
-    const res = await fetch('/api/health');
+    const q = activeJobId && activeJobId !== 'all' ? `?job_id=${{encodeURIComponent(activeJobId)}}` : '';
+    const res = await fetch(`/api/health${{q}}`);
     const data = await res.json();
 
     cache = data.nodes || [];
+    updateJobIdOptions(data.job_ids || [], data.selected_job_id || 'all');
 
     document.getElementById('total').textContent = data.summary?.total_nodes ?? 0;
     document.getElementById('healthy').textContent = data.summary?.healthy ?? 0;
@@ -292,7 +377,7 @@ async function refresh() {{
     document.getElementById('unknown').textContent = data.summary?.unknown ?? 0;
 
     const fileCount = (data.source_files || []).length;
-    document.getElementById('meta').textContent = `Last refresh: ${{data.last_refresh_utc || ''}} | Sources: ${{fileCount}}`;
+    document.getElementById('meta').textContent = `Last refresh: ${{data.last_refresh_utc || ''}} | Sources: ${{fileCount}} | PBS_JOBID: ${{data.selected_job_id || 'all'}}`;
 
     renderRows();
   }} catch (err) {{
@@ -300,8 +385,33 @@ async function refresh() {{
   }}
 }}
 
+document.getElementById('rows').addEventListener('click', (ev) => {{
+  const target = ev.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (!target.classList.contains('check-btn')) return;
+
+  const idxRaw = target.getAttribute('data-row-index');
+  const idx = Number(idxRaw);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= renderedRows.length) return;
+
+  const node = renderedRows[idx];
+  const passed = passedCheckNames(node) || '-';
+  const failed = failedCheckNames(node) || '-';
+
+  alert(
+    `Node: ${{node.node || 'unknown'}}\\n` +
+    `PBS_JOBID: ${{node.job_id || 'unknown'}}\\n\\n` +
+    `Passed checks:\\n${{passed}}\\n\\n` +
+    `Failed checks:\\n${{failed}}`
+  );
+}});
+
 document.getElementById('search').addEventListener('input', renderRows);
 document.getElementById('status').addEventListener('change', renderRows);
+document.getElementById('jobId').addEventListener('change', () => {{
+  activeJobId = document.getElementById('jobId').value || 'all';
+  refresh();
+}});
 refresh();
 setInterval(refresh, refreshMs);
 </script>
@@ -334,16 +444,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path in {"/", "/index.html"}:
+        parsed = urlsplit(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
+
+        if path in {"/", "/index.html"}:
             self._send_html(build_index_html(self.refresh_seconds))
             return
 
-        if self.path == "/api/health":
+        if path == "/api/health":
             self.store.refresh()
-            self._send_json(self.store.snapshot())
+            selected_job_id = query.get("job_id", ["all"])[0]
+            self._send_json(self.store.snapshot(selected_job_id=selected_job_id))
             return
 
-        if self.path == "/api/ping":
+        if path == "/api/ping":
             self._send_json({"ok": True, "time": iso_now()})
             return
 
